@@ -1,176 +1,459 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Sparkles, Trash2, Send, Brain, Plus, Eye, BookOpen, X, Shield, Cpu, Zap, Ghost, Loader2 } from 'lucide-react';
+import {
+  ArrowRight,
+  BookOpen,
+  Brain,
+  FileText,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Search,
+  Shield,
+  Sparkles,
+  Trash2,
+  Upload,
+  WandSparkles,
+} from 'lucide-react';
 
-const API = "http://localhost:5000/api/notes";
+const API = '/api/study-items';
+
+const emptyForm = {
+  title: '',
+  subject: 'General',
+  content: '',
+};
 
 export default function App() {
-  const [notes, setNotes] = useState([]);
-  const [showInput, setShowInput] = useState(false);
-  const [showLibrary, setShowLibrary] = useState(false);
-  const [expandedNote, setExpandedNote] = useState(null);
-  const [loadingId, setLoadingId] = useState(null); // Prevents 500 crashes
-  const [chat, setChat] = useState({ id: null, text: "" });
-  const [form, setForm] = useState({ title: '', content: '' });
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [busyItemId, setBusyItemId] = useState(null);
+  const [questionByItem, setQuestionByItem] = useState({});
+  const [answerByItem, setAnswerByItem] = useState({});
+  const [expandedId, setExpandedId] = useState(null);
+  const [showComposer, setShowComposer] = useState(false);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState(emptyForm);
+  const [file, setFile] = useState(null);
 
-  useEffect(() => { load(); }, []);
-  const load = async () => { try { const res = await axios.get(API); setNotes(res.data); } catch { console.error("Offline"); } };
+  const stats = useMemo(() => {
+    const totalQuiz = items.reduce((count, item) => count + (item.quiz?.length || 0), 0);
+    return {
+      count: items.length,
+      quizCount: totalQuiz,
+    };
+  }, [items]);
 
-  const handleSave = async (e) => {
-    e.preventDefault();
-    await axios.post(`${API}/upload`, form);
-    setForm({ title: '', content: '' });
-    setShowInput(false);
-    setShowLibrary(true);
-    load();
+  const loadItems = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const response = await axios.get(API);
+      setItems(response.data);
+    } catch (fetchError) {
+      setError('Could not load your study items. Check that the server is running.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleQuiz = async (id) => {
-    setLoadingId(id);
+  useEffect(() => {
+    loadItems();
+  }, []);
+
+  const resetComposer = () => {
+    setForm(emptyForm);
+    setFile(null);
+    setShowComposer(false);
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+
     try {
-      await axios.post(`${API}/${id}/quiz`);
-      await load();
-    } catch (err) {
-      alert("AI Error: The server had trouble parsing the response. Try again.");
+      const payload = new FormData();
+      payload.append('title', form.title);
+      payload.append('subject', form.subject);
+      payload.append('content', form.content);
+      if (file) {
+        payload.append('file', file);
+      }
+
+      await axios.post(`${API}/upload`, payload, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      resetComposer();
+      await loadItems();
+    } catch (submitError) {
+      setError(submitError.response?.data?.error || 'Failed to save your study material.');
     } finally {
-      setLoadingId(null);
+      setSaving(false);
+    }
+  };
+
+  const handleSummary = async (itemId) => {
+    setBusyItemId(itemId);
+    setError('');
+
+    try {
+      await axios.post(`${API}/${itemId}/summary`);
+      await loadItems();
+    } catch (summaryError) {
+      setError('Summary generation failed.');
+    } finally {
+      setBusyItemId(null);
+    }
+  };
+
+  const handleQuiz = async (itemId) => {
+    setBusyItemId(itemId);
+    setError('');
+
+    try {
+      await axios.post(`${API}/${itemId}/quiz`);
+      await loadItems();
+    } catch (quizError) {
+      setError('Quiz generation failed.');
+    } finally {
+      setBusyItemId(null);
+    }
+  };
+
+  const handleAsk = async (itemId) => {
+    const question = (questionByItem[itemId] || '').trim();
+    if (!question) {
+      return;
+    }
+
+    setBusyItemId(itemId);
+    setError('');
+
+    try {
+      const response = await axios.post(`${API}/${itemId}/ask`, { question });
+      setAnswerByItem((current) => ({
+        ...current,
+        [itemId]: response.data.answer,
+      }));
+      setQuestionByItem((current) => ({
+        ...current,
+        [itemId]: '',
+      }));
+    } catch (askError) {
+      setError('Question answering failed.');
+    } finally {
+      setBusyItemId(null);
+    }
+  };
+
+  const handleDelete = async (itemId) => {
+    try {
+      await axios.delete(`${API}/${itemId}`);
+      await loadItems();
+    } catch (deleteError) {
+      setError('Delete failed.');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-zinc-100 font-sans selection:bg-indigo-500/30">
-      
-      {/* NAVBAR */}
-      <nav className="max-w-7xl mx-auto px-6 py-8 flex justify-between items-center border-b border-zinc-900/50">
-        <div className="flex items-center gap-2 font-black text-2xl tracking-tighter text-indigo-500 italic cursor-pointer" onClick={() => setShowLibrary(false)}>
-          <Shield className="fill-indigo-500/10" size={24}/> SCHOLAR.AI
-        </div>
-        <button onClick={() => setShowInput(true)} className="bg-indigo-600 px-5 py-2.5 rounded-xl font-bold hover:bg-indigo-500 transition-all text-sm flex items-center gap-2">
-          <Plus size={16}/> New Entry
-        </button>
-      </nav>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(186,230,253,0.7)_0,_#f8fafc_34%,_#eef2ff_100%)] text-slate-900">
+      <div className="mx-auto flex min-h-screen max-w-7xl flex-col px-4 py-4 sm:px-6 lg:px-8">
+        <header className="mb-8 flex flex-col gap-4 rounded-[2rem] border border-slate-200/80 bg-white/80 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.08)] backdrop-blur md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.35em] text-sky-600">
+              <Shield size={16} /> Study Vault
+            </div>
+            <h1 className="text-3xl font-black tracking-tight sm:text-4xl">
+              Upload notes, ask questions, and generate summaries.
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-slate-600 sm:text-base">
+              A student study assistant built with React, Node.js, Express, MongoDB, Multer, pdf-parse, Tailwind CSS, and Gemini.
+            </p>
+          </div>
 
-      <main className="max-w-7xl mx-auto px-6 py-12">
-        
-        {/* LANDING PAGE */}
-        {!showLibrary && (
-          <section className="py-20 animate-in fade-in slide-in-from-top-4 duration-700">
-            <div className="max-w-3xl">
-              <h1 className="text-6xl font-black tracking-tighter mb-6 bg-gradient-to-r from-white to-zinc-500 bg-clip-text text-transparent">
-                Your Personal AI <br/> Knowledge Vault.
-              </h1>
-              <p className="text-xl text-zinc-400 mb-10 leading-relaxed">
-                Scholar.AI automates your study workflow. Securely store notes, generate 
-                instant mastery quizzes, and chat with your data.
-              </p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-                <div className="bg-zinc-900/50 p-6 rounded-2xl border border-zinc-800">
-                  <Cpu className="text-indigo-400 mb-4" size={24}/>
-                  <h3 className="font-bold mb-2 text-sm">Neural Analysis</h3>
-                  <p className="text-[10px] text-zinc-500">AI automatically summarizes long study materials.</p>
-                </div>
-                <div className="bg-zinc-900/50 p-6 rounded-2xl border border-zinc-800">
-                  <Brain className="text-indigo-400 mb-4" size={24}/>
-                  <h3 className="font-bold mb-2 text-sm">Mastery Quizzes</h3>
-                  <p className="text-[10px] text-zinc-500">Transform static notes into active testing modules.</p>
-                </div>
-                <div className="bg-zinc-900/50 p-6 rounded-2xl border border-zinc-800">
-                  <Zap className="text-indigo-400 mb-4" size={24}/>
-                  <h3 className="font-bold mb-2 text-sm">Instant Answers</h3>
-                  <p className="text-[10px] text-zinc-500">Ask specific questions and get answers from your notes.</p>
-                </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-xs uppercase tracking-[0.25em] text-slate-500">Items</div>
+              <div className="mt-1 text-2xl font-black">{stats.count}</div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="text-xs uppercase tracking-[0.25em] text-slate-500">Quiz Cards</div>
+              <div className="mt-1 text-2xl font-black">{stats.quizCount}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowComposer(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-sky-600 px-4 py-3 text-sm font-black text-white transition hover:bg-sky-500"
+            >
+              <Plus size={16} /> New Study Item
+            </button>
+          </div>
+        </header>
+
+        <main className="grid flex-1 gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
+          <section className="rounded-[2rem] border border-slate-200/80 bg-white/85 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.08)] backdrop-blur">
+            <div className="mb-5 flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
+                <BookOpen size={20} />
               </div>
+              <div>
+                <h2 className="text-lg font-bold">Workflow</h2>
+                <p className="text-sm text-slate-600">Create a note or upload a PDF.</p>
+              </div>
+            </div>
 
-              <button 
-                onClick={() => setShowLibrary(true)}
-                className="group flex items-center gap-3 bg-white text-black px-8 py-4 rounded-2xl font-black hover:bg-indigo-500 hover:text-white transition-all"
-              >
-                Access Your Vault <BookOpen size={20} className="group-hover:translate-x-1 transition-transform"/>
-              </button>
+            <div className="space-y-4 text-sm text-slate-700">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-1 flex items-center gap-2 font-semibold text-sky-700"><Upload size={14} /> Upload</div>
+                <p>Attach a PDF or paste text notes. Multer handles the file upload and pdf-parse extracts the text.</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-1 flex items-center gap-2 font-semibold text-sky-700"><Sparkles size={14} /> Summary</div>
+                <p>The server generates a revision summary automatically after saving.</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-1 flex items-center gap-2 font-semibold text-sky-700"><Brain size={14} /> Q&A</div>
+                <p>Ask a question against any saved study item and get an AI response.</p>
+              </div>
+            </div>
+
+            <div className="mt-5 rounded-2xl border border-dashed border-sky-300 bg-sky-50 p-4 text-sm text-sky-900">
+              Use the server <span className="font-bold">/api/study-items</span> endpoints to test API behavior directly.
             </div>
           </section>
-        )}
 
-        {/* VAULT LIBRARY */}
-        {showLibrary && (
-          <section className="animate-in fade-in duration-500">
-            <div className="flex justify-between items-center mb-12">
-              <h2 className="text-3xl font-black tracking-tight flex items-center gap-3">
-                Vault <span className="bg-zinc-800 text-zinc-500 text-xs px-3 py-1 rounded-full">{notes.length}</span>
-              </h2>
-              <button onClick={() => setShowLibrary(false)} className="text-zinc-500 hover:text-white text-sm font-bold">Back to Home</button>
+          <section className="rounded-[2rem] border border-slate-200/80 bg-white/85 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.08)] backdrop-blur">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-black">Study Library</h2>
+                <p className="text-sm text-slate-600">Summary, Q&A, and quiz generation live here.</p>
+              </div>
+              <button
+                type="button"
+                onClick={loadItems}
+                className="inline-flex items-center gap-2 self-start rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                <RefreshCw size={14} /> Refresh
+              </button>
             </div>
 
-            {notes.length === 0 ? (
-              <div className="py-32 flex flex-col items-center justify-center text-center bg-zinc-900/20 rounded-[3rem] border border-dashed border-zinc-800">
-                <Ghost size={60} className="text-zinc-800 mb-6" />
-                <h3 className="text-2xl font-bold text-zinc-400 mb-2">The Vault is Empty</h3>
-                <button onClick={() => setShowInput(true)} className="bg-zinc-800 px-8 py-3 rounded-xl font-bold mt-4 border border-zinc-700">Create Card</button>
+            {error ? (
+              <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {error}
+              </div>
+            ) : null}
+
+            {loading ? (
+              <div className="flex min-h-[320px] items-center justify-center rounded-[1.5rem] border border-slate-200 bg-slate-50">
+                <Loader2 className="animate-spin text-sky-600" />
+              </div>
+            ) : items.length === 0 ? (
+              <div className="flex min-h-[320px] flex-col items-center justify-center rounded-[1.5rem] border border-dashed border-slate-200 bg-slate-50 text-center">
+                <FileText size={42} className="mb-4 text-sky-600" />
+                <h3 className="text-xl font-bold">No study items yet</h3>
+                <p className="mt-2 max-w-md text-sm text-slate-600">
+                  Create your first note or upload a PDF to generate summaries and quiz cards.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowComposer(true)}
+                  className="mt-5 inline-flex items-center gap-2 rounded-2xl bg-sky-600 px-5 py-3 text-sm font-black text-white"
+                >
+                  <Plus size={16} /> Add Material
+                </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {notes.map(note => (
-                  <div key={note._id} className="bg-zinc-900/40 border border-zinc-800 p-8 rounded-[2.5rem] hover:border-indigo-500/30 transition-all relative">
-                    <button onClick={() => axios.delete(`${API}/${note._id}`).then(load)} className="absolute top-8 right-8 text-zinc-700 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
-                    <h3 className="text-2xl font-bold mb-4">{note.title}</h3>
-                    
-                    <button onClick={() => setExpandedNote(expandedNote === note._id ? null : note._id)} className="flex items-center gap-2 text-zinc-500 text-xs hover:text-white mb-6 font-bold transition-all">
-                      <Eye size={14}/> {expandedNote === note._id ? "Hide Details" : "Show Card Content"}
-                    </button>
+              <div className="grid gap-4 xl:grid-cols-2">
+                {items.map((item) => {
+                  const isOpen = expandedId === item._id;
+                  const isBusy = busyItemId === item._id;
 
-                    {expandedNote === note._id && (
-                      <div className="mb-8 p-5 bg-zinc-950/80 rounded-2xl text-xs text-zinc-400 border border-zinc-800/50 animate-in zoom-in-95 leading-relaxed">
-                        {note.content}
-                      </div>
-                    )}
-
-                    <div className="space-y-3 pt-6 border-t border-zinc-800/50">
-                      <button 
-                        disabled={loadingId === note._id}
-                        onClick={() => handleQuiz(note._id)} 
-                        className="w-full py-3 bg-zinc-800 rounded-xl text-[10px] font-black flex items-center justify-center gap-2 hover:bg-indigo-600 transition-all disabled:opacity-50"
-                      >
-                        {loadingId === note._id ? <Loader2 size={14} className="animate-spin"/> : <Brain size={14}/>}
-                        {note.quiz?.length > 0 ? "Regenerate Quiz" : "Generate Mastery Quiz"}
-                      </button>
-
-                      <div className="relative">
-                        <input type="text" placeholder="Ask AI about this..." className="w-full p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-[10px] outline-none focus:border-indigo-500/40" onKeyDown={(e) => { if(e.key === 'Enter') { setChat({ id: note._id, text: "Thinking..." }); axios.post(`${API}/${note._id}/ask`, { question: e.target.value }).then(res => setChat({ id: note._id, text: res.data.answer })); e.target.value = ''; }}} />
-                        <Send size={14} className="absolute right-3 top-3 text-zinc-600" />
-                      </div>
-
-                      {chat.id === note._id && <div className="p-4 bg-indigo-600/10 text-indigo-100 rounded-xl text-[10px] border border-indigo-500/20">{chat.text}</div>}
-
-                      {note.quiz?.map((q, i) => (
-                        <div key={i} className="mt-4 p-4 bg-zinc-950 rounded-xl border border-zinc-800 text-[10px] animate-in slide-in-from-top-2">
-                          <p className="font-bold text-zinc-300 mb-1">Q: {q.question}</p>
-                          <p className="text-indigo-400 font-bold italic">A: {q.answer}</p>
+                  return (
+                    <article key={item._id} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 transition hover:border-sky-300 hover:shadow-lg hover:shadow-slate-200/70">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="mb-2 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.3em] text-slate-500">
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{item.subject || 'General'}</span>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{item.sourceType || 'text'}</span>
+                            {item.fileName ? <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">{item.fileName}</span> : null}
+                          </div>
+                          <h3 className="text-xl font-black text-slate-900">{item.title}</h3>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item._id)}
+                          className="rounded-xl p-2 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                          aria-label={`Delete ${item.title}`}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedId(isOpen ? null : item._id)}
+                          className="inline-flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100"
+                        >
+                          <Search size={14} /> {isOpen ? 'Hide content' : 'View content'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSummary(item._id)}
+                          disabled={isBusy}
+                          className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-3 py-2 text-xs font-black text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isBusy ? <Loader2 size={14} className="animate-spin" /> : <WandSparkles size={14} />} Summary
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQuiz(item._id)}
+                          disabled={isBusy}
+                          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <Brain size={14} /> Quiz
+                        </button>
+                      </div>
+
+                      {isOpen ? (
+                        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed text-slate-700">
+                          {item.content}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="mb-2 text-xs font-bold uppercase tracking-[0.3em] text-slate-500">AI Summary</div>
+                        <p className="text-sm leading-relaxed text-slate-700">
+                          {item.aiSummary || 'No summary generated yet.'}
+                        </p>
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="mb-3 text-xs font-bold uppercase tracking-[0.3em] text-slate-500">Ask a question</div>
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <input
+                            value={questionByItem[item._id] || ''}
+                            onChange={(event) => setQuestionByItem((current) => ({ ...current, [item._id]: event.target.value }))}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                handleAsk(item._id);
+                              }
+                            }}
+                            placeholder="What is the main takeaway?"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleAsk(item._id)}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white transition hover:bg-slate-700"
+                          >
+                            Ask <ArrowRight size={14} />
+                          </button>
+                        </div>
+
+                        {answerByItem[item._id] ? (
+                          <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-slate-700">
+                            {answerByItem[item._id]}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="mb-3 text-xs font-bold uppercase tracking-[0.3em] text-slate-500">Quiz</div>
+                        {item.quiz?.length ? (
+                          <div className="space-y-3">
+                            {item.quiz.map((quizItem, index) => (
+                              <div key={`${item._id}-${index}`} className="rounded-xl border border-slate-200 bg-white p-3">
+                                <p className="text-sm font-semibold text-slate-900">Q{index + 1}. {quizItem.question}</p>
+                                {Array.isArray(quizItem.options) && quizItem.options.length > 0 ? (
+                                  <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                                    {quizItem.options.map((option) => (
+                                      <li key={option}>• {option}</li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                                <p className="mt-2 text-sm text-sky-700"><span className="font-bold">Answer:</span> {quizItem.answer}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-600">Generate a quiz to add revision questions here.</p>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
-        )}
+        </main>
+      </div>
 
-        {/* INPUT MODAL */}
-        {showInput && (
-          <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-50 flex items-center justify-center p-6">
-            <div className="bg-zinc-900 border border-zinc-800 w-full max-w-xl p-10 rounded-[3rem] relative shadow-2xl animate-in zoom-in-95">
-              <button onClick={() => setShowInput(false)} className="absolute top-8 right-8 text-zinc-500 hover:text-white"><X/></button>
-              <h2 className="text-2xl font-black mb-8 text-indigo-400 tracking-tight">Capture Knowledge</h2>
-              <form onSubmit={handleSave} className="space-y-6">
-                <input className="w-full p-4 bg-zinc-950 border border-zinc-800 rounded-2xl outline-none focus:border-indigo-500" placeholder="Module Title" value={form.title} onChange={e => setForm({...form, title: e.target.value})} required />
-                <textarea className="w-full p-4 h-64 bg-zinc-950 border border-zinc-800 rounded-2xl outline-none focus:border-indigo-500 resize-none" placeholder="Paste study notes..." value={form.content} onChange={e => setForm({...form, content: e.target.value})} required />
-                <button className="w-full bg-indigo-600 py-4 rounded-2xl font-black shadow-lg shadow-indigo-600/20 hover:scale-[1.01] active:scale-95 transition-all">Store In Vault</button>
-              </form>
+      {showComposer ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/20 px-4 py-8 backdrop-blur-md">
+          <form onSubmit={handleSubmit} className="w-full max-w-2xl rounded-[2rem] border border-slate-200 bg-white p-6 shadow-[0_25px_90px_rgba(15,23,42,0.16)] sm:p-8">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-black">Add Study Material</h2>
+                <p className="mt-1 text-sm text-slate-600">Upload a PDF or paste text content.</p>
+              </div>
+              <button type="button" onClick={resetComposer} className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-900">
+                ×
+              </button>
             </div>
-          </div>
-        )}
-      </main>
+
+            <div className="mt-6 grid gap-4 sm:grid-cols-2">
+              <input
+                value={form.title}
+                onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400"
+                placeholder="Title"
+                required
+              />
+              <input
+                value={form.subject}
+                onChange={(event) => setForm((current) => ({ ...current, subject: event.target.value }))}
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400"
+                placeholder="Subject"
+              />
+            </div>
+
+            <div className="mt-4">
+              <label className="mb-2 block text-sm font-semibold text-slate-700">PDF file</label>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(event) => setFile(event.target.files?.[0] || null)}
+                className="block w-full cursor-pointer rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 file:mr-4 file:rounded-xl file:border-0 file:bg-sky-600 file:px-4 file:py-2 file:text-sm file:font-black file:text-white"
+              />
+            </div>
+
+            <div className="mt-4">
+              <label className="mb-2 block text-sm font-semibold text-slate-700">Text content</label>
+              <textarea
+                value={form.content}
+                onChange={(event) => setForm((current) => ({ ...current, content: event.target.value }))}
+                className="h-56 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400"
+                placeholder="Paste your study notes here"
+              />
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button type="button" onClick={resetComposer} className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50">
+                Cancel
+              </button>
+              <button type="submit" disabled={saving} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-sky-600 px-5 py-3 text-sm font-black text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60">
+                {saving ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                Save and Generate
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
 }
