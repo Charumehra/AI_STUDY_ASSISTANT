@@ -220,9 +220,6 @@ export default function App() {
               </div>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-dashed border-sky-300 bg-sky-50 p-4 text-sm text-sky-900">
-              Use the server <span className="font-bold">/api/study-items</span> endpoints to test API behavior directly.
-            </div>
           </section>
 
           <section className="rounded-[2rem] border border-slate-200/80 bg-white/85 p-5 shadow-[0_20px_70px_rgba(15,23,42,0.08)] backdrop-blur">

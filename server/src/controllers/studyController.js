@@ -1,13 +1,81 @@
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { spawn } = require('node:child_process');
 
 const StudyItem = require('../models/StudyItem');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
 const geminiApiKey = process.env.GEMINI_API_KEY;
-const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
+const geminiModelCandidates = [
+    process.env.GEMINI_MODEL,
+    'gemini-flash-latest',
+    'gemini-2.0-flash',
+].filter(Boolean);
+const lastGeminiModelCandidate = geminiModelCandidates[geminiModelCandidates.length - 1];
+const geminiRetryDelaysMs = [500];
+const geminiCooldownMs = Number(process.env.GEMINI_COOLDOWN_MS || 60000);
+let geminiCooldownUntil = 0;
+
+function runCurlJson(url, requestBody) {
+    return new Promise((resolve, reject) => {
+        const curlProcess = spawn('curl', [
+            '-sS',
+            '--fail-with-body',
+            '--data-binary',
+            '@-',
+            url,
+            '-H',
+            'Content-Type: application/json',
+            '-H',
+            `X-Goog-Api-Key: ${geminiApiKey}`,
+        ]);
+
+        let stdout = '';
+        let stderr = '';
+
+        curlProcess.stdout.on('data', (chunk) => {
+            stdout += chunk.toString();
+        });
+
+        curlProcess.stderr.on('data', (chunk) => {
+            stderr += chunk.toString();
+        });
+
+        curlProcess.on('error', reject);
+
+        curlProcess.on('close', (code) => {
+            if (code !== 0) {
+                const error = new Error(stderr.trim() || `curl exited with code ${code}`);
+                error.code = code;
+                reject(error);
+                return;
+            }
+
+            resolve(stdout);
+        });
+
+        curlProcess.stdin.end(JSON.stringify(requestBody));
+    });
+}
+
+function isRetryableGeminiError(message) {
+    return /429|too many requests|rate limit|rate limited|5\d\d|service unavailable|timeout|timed out|ECONNRESET|EPIPE/i.test(message);
+}
+
+function isNonRetryableGeminiError(message) {
+    return /404|not found|unsupported|401|403|unauthorized|forbidden|invalid api key/i.test(message);
+}
+
+function isRateLimitError(message) {
+    return /429|too many requests|rate limit|rate limited/i.test(message);
+}
+
+function delay(ms) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
 
 function getTextFromBody(reqBody) {
     return [reqBody.content, reqBody.notes, reqBody.text]
@@ -46,18 +114,82 @@ function createFallbackQuiz(content) {
 }
 
 async function generateWithGemini(prompt, fallbackValue) {
-    if (!genAI) {
+    if (!geminiApiKey) {
         return fallbackValue;
     }
 
-    try {
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-        const result = await model.generateContent(prompt);
-        return result.response.text().trim();
-    } catch (error) {
-        console.error('Gemini request failed:', error.message);
+    if (Date.now() < geminiCooldownUntil) {
         return fallbackValue;
     }
+
+    let shouldStopModelFallback = false;
+
+    for (const modelName of geminiModelCandidates) {
+        let transientFailure = false;
+
+        for (let attempt = 0; attempt <= geminiRetryDelaysMs.length; attempt += 1) {
+            try {
+                const requestBody = {
+                    contents: [
+                        {
+                            parts: [{ text: prompt }],
+                        },
+                    ],
+                };
+
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+                const stdout = await runCurlJson(url, requestBody);
+
+                const response = JSON.parse(stdout);
+                const text = response?.candidates?.[0]?.content?.parts
+                    ?.map((part) => part?.text || '')
+                    .join('')
+                    .trim();
+
+                if (text) {
+                    return text;
+                }
+
+                throw new Error('Gemini response did not include text content');
+            } catch (error) {
+                const message = error?.message || '';
+                const isTransient = isRetryableGeminiError(message);
+                const isRateLimited = isRateLimitError(message);
+                const shouldRetrySameModel = isTransient && !isRateLimited && attempt < geminiRetryDelaysMs.length;
+                if (!shouldRetrySameModel) {
+                    console.error(
+                        `Gemini request failed for ${modelName}${attempt > 0 ? ` (attempt ${attempt + 1})` : ''}:`,
+                        message
+                    );
+                }
+
+                if (shouldRetrySameModel) {
+                    await delay(geminiRetryDelaysMs[attempt]);
+                    transientFailure = true;
+                    continue;
+                }
+
+                if (isRateLimited) {
+                    geminiCooldownUntil = Date.now() + geminiCooldownMs;
+                    shouldStopModelFallback = true;
+                }
+
+                if (isNonRetryableGeminiError(message)) {
+                    transientFailure = false;
+                } else if (isTransient) {
+                    transientFailure = true;
+                }
+
+                break;
+            }
+        }
+
+        if (shouldStopModelFallback || !transientFailure || modelName === lastGeminiModelCandidate) {
+            break;
+        }
+    }
+
+    return fallbackValue;
 }
 
 async function buildStudyAssets({ title, subject, content }) {
